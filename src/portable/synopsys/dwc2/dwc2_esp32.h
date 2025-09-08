@@ -32,19 +32,19 @@
  extern "C" {
 #endif
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+// #include "freertos/FreeRTOS.h"
+// #include "freertos/task.h"
 
-#include "esp_intr_alloc.h"
-#include "soc/periph_defs.h"
-#include "soc/usb_wrap_struct.h"
+// #include "esp_intr_alloc.h"
+// #include "soc/periph_defs.h"
+// #include "soc/usb_wrap_struct.h"
 
 #if TU_CHECK_MCU(OPT_MCU_ESP32S2, OPT_MCU_ESP32S3)
 #define DWC2_FS_REG_BASE   0x60080000UL
 #define DWC2_EP_MAX        7
 
 static const dwc2_controller_t _dwc2_controller[] = {
-  { .reg_base = DWC2_FS_REG_BASE, .irqnum = ETS_USB_INTR_SOURCE, .ep_count = 7, .ep_in_count = 5, .ep_fifo_size = 1024 }
+  { .reg_base = DWC2_FS_REG_BASE, .irqnum = /*ETS_USB_INTR_SOURCE */ 38, .ep_count = 7, .ep_in_count = 5, .ep_fifo_size = 1024 }
 };
 
 #elif TU_CHECK_MCU(OPT_MCU_ESP32P4)
@@ -61,9 +61,34 @@ static const dwc2_controller_t _dwc2_controller[] = {
 #endif
 
 //--------------------------------------------------------------------+
+// Embedder hooks (provide these in your platform code; weak so link-time override possible)
+//--------------------------------------------------------------------+
+TU_ATTR_WEAK void tusb_esp32_int_enable(uint32_t irq_num, void (*handler)(void*), void* arg);
+TU_ATTR_WEAK void tusb_esp32_int_disable(uint32_t irq_num);
+TU_ATTR_WEAK void tusb_esp32_delay_ms(uint32_t ms);
+
+#if (CFG_TUD_DWC2_DMA_ENABLE || CFG_TUH_DWC2_DMA_ENABLE) && defined(SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE) && SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE
+
+#if CFG_TUD_MEM_DCACHE_LINE_SIZE != CONFIG_CACHE_L1_CACHE_LINE_SIZE || \
+    CFG_TUH_MEM_DCACHE_LINE_SIZE != CONFIG_CACHE_L1_CACHE_LINE_SIZE
+#error "CFG_TUD/TUH_MEM_DCACHE_LINE_SIZE must match CONFIG_CACHE_L1_CACHE_LINE_SIZE"
+#endif
+
+/* If DMA is enabled and internal L1 cache is used the embedder must provide cache sync hooks.
+   Implement these in your platform (Rust/C) and mark them available at link time. */
+TU_ATTR_WEAK bool tusb_esp32_dcache_clean(const void* addr, uint32_t size);
+TU_ATTR_WEAK bool tusb_esp32_dcache_invalidate(const void* addr, uint32_t size);
+TU_ATTR_WEAK bool tusb_esp32_dcache_clean_invalidate(const void* addr, uint32_t size);
+
+/* Map tinyusb names to embedder hooks */
+#define dwc2_dcache_clean             tusb_esp32_dcache_clean
+#define dwc2_dcache_invalidate        tusb_esp32_dcache_invalidate
+#define dwc2_dcache_clean_invalidate  tusb_esp32_dcache_clean_invalidate
+#endif
+
+//--------------------------------------------------------------------+
 //
 //--------------------------------------------------------------------+
-static intr_handle_t usb_ih[TU_ARRAY_SIZE(_dwc2_controller)];
 
 static void dwc2_int_handler_wrap(void* arg) {
   const uint8_t rhport = tu_u16_low((uint16_t)(uintptr_t)arg);
@@ -82,10 +107,11 @@ static void dwc2_int_handler_wrap(void* arg) {
 
 TU_ATTR_ALWAYS_INLINE static inline void dwc2_int_set(uint8_t rhport, tusb_role_t role, bool enabled) {
   if (enabled) {
-    esp_intr_alloc(_dwc2_controller[rhport].irqnum, ESP_INTR_FLAG_LOWMED,
-                   dwc2_int_handler_wrap, (void*)(uintptr_t)tu_u16(role, rhport), &usb_ih[rhport]);
+    /* delegate to embedder to enable the irq and attach dwc2_int_handler_wrap */
+    tusb_esp32_int_enable(_dwc2_controller[rhport].irqnum, dwc2_int_handler_wrap, (void*)(uintptr_t)tu_u16(role, rhport));
   } else {
-    esp_intr_free(usb_ih[rhport]);
+    /* delegate to embedder to disable the irq */
+    tusb_esp32_int_disable(_dwc2_controller[rhport].irqnum);
   }
 }
 
@@ -93,7 +119,8 @@ TU_ATTR_ALWAYS_INLINE static inline void dwc2_int_set(uint8_t rhport, tusb_role_
 #define dwc2_dcd_int_disable(_rhport) dwc2_int_set(_rhport, TUSB_ROLE_DEVICE, false)
 
 TU_ATTR_ALWAYS_INLINE static inline void dwc2_remote_wakeup_delay(void) {
-  vTaskDelay(pdMS_TO_TICKS(1));
+  /* delegate delay to embedder (no FreeRTOS) */
+  tusb_esp32_delay_ms(1);
 }
 
 // MCU specific PHY init, called BEFORE core reset
@@ -115,40 +142,8 @@ TU_ATTR_ALWAYS_INLINE static inline void dwc2_phy_update(dwc2_regs_t* dwc2, uint
 // Data Cache
 //--------------------------------------------------------------------+
 #if CFG_TUD_DWC2_DMA_ENABLE || CFG_TUH_DWC2_DMA_ENABLE
-#if defined(SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE) && SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE
-#include "esp_cache.h"
-
-#if CFG_TUD_MEM_DCACHE_LINE_SIZE != CONFIG_CACHE_L1_CACHE_LINE_SIZE || \
-    CFG_TUH_MEM_DCACHE_LINE_SIZE != CONFIG_CACHE_L1_CACHE_LINE_SIZE
-#error "CFG_TUD/TUH_MEM_DCACHE_LINE_SIZE must match CONFIG_CACHE_L1_CACHE_LINE_SIZE"
-#endif
-
-TU_ATTR_ALWAYS_INLINE static inline uint32_t round_up_to_cache_line_size(uint32_t size) {
-  if (size & (CONFIG_CACHE_L1_CACHE_LINE_SIZE-1)) {
-    size = (size & ~(CONFIG_CACHE_L1_CACHE_LINE_SIZE-1)) + CONFIG_CACHE_L1_CACHE_LINE_SIZE;
-  }
-  return size;
-}
-
-TU_ATTR_ALWAYS_INLINE static inline bool dwc2_dcache_clean(const void* addr, uint32_t data_size) {
-  const int flag = ESP_CACHE_MSYNC_FLAG_TYPE_DATA | ESP_CACHE_MSYNC_FLAG_DIR_C2M;
-  data_size = round_up_to_cache_line_size(data_size);
-  return ESP_OK == esp_cache_msync((void*)addr, data_size, flag);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline bool dwc2_dcache_invalidate(const void* addr, uint32_t data_size) {
-  const int flag = ESP_CACHE_MSYNC_FLAG_TYPE_DATA | ESP_CACHE_MSYNC_FLAG_DIR_M2C;
-  data_size = round_up_to_cache_line_size(data_size);
-  return ESP_OK == esp_cache_msync((void*)addr, data_size, flag);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline bool dwc2_dcache_clean_invalidate(const void* addr, uint32_t data_size) {
-  const int flag = ESP_CACHE_MSYNC_FLAG_TYPE_DATA | ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_DIR_M2C;
-  data_size = round_up_to_cache_line_size(data_size);
-  return ESP_OK == esp_cache_msync((void*)addr, data_size, flag);
-}
-
-#endif
+/* If SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE not set, default (platform) cache handling is used.
+   Otherwise hooks above are used. */
 #endif
 
 #ifdef __cplusplus

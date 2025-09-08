@@ -31,10 +31,11 @@
 #if (((CFG_TUSB_MCU == OPT_MCU_ESP32S2) ||  (CFG_TUSB_MCU == OPT_MCU_ESP32S3)) && CFG_TUD_ENABLED)
 
 // Espressif
-#include "xtensa/xtensa_api.h"
+//#include "xtensa/xtensa_api.h"
 
-#include "esp_intr_alloc.h"
-#include "esp_log.h"
+// replace esp-idf dependencies with embedder hooks
+//#include "esp_intr_alloc.h"
+//#include "esp_log.h"
 #include "soc/dport_reg.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/usb_periph.h"
@@ -73,8 +74,23 @@ typedef struct {
     uint8_t interval;
 } xfer_ctl_t;
 
-static const char *TAG = "TUSB:DCD";
-static intr_handle_t usb_ih;
+/* Embedder hooks (weak so link-time override possible)
+   Implement these in your platform (C/Rust) and mark them available at link time.
+   - tusb_esp32_int_enable: enable irq_num, attach handler(arg)
+   - tusb_esp32_int_disable: disable irq_num
+   - tusb_esp32_delay_ms: blocking delay in ms (used for remote wakeup timing)
+   - tusb_esp32_logv / tusb_esp32_early_logv: optional logging (printf-like)
+*/
+TU_ATTR_WEAK void tusb_esp32_int_enable(uint32_t irq_num, void (*handler)(void*), void* arg);
+TU_ATTR_WEAK void tusb_esp32_int_disable(uint32_t irq_num);
+TU_ATTR_WEAK void tusb_esp32_delay_ms(uint32_t ms);
+TU_ATTR_WEAK void tusb_esp32_logv(const char *tag, const char *fmt, ...);
+TU_ATTR_WEAK void tusb_esp32_early_logv(const char *tag, const char *fmt, ...);
+
+/* Local logging macros map to embedder hooks; if not provided these will be no-ops */
+#define TAG "TUSB:DCD"
+#define ESP_LOGV(...)    do { tusb_esp32_logv(__VA_ARGS__); } while(0)
+#define ESP_EARLY_LOGV(...) do { tusb_esp32_early_logv(__VA_ARGS__); } while(0)
 
 
 static uint32_t _setup_packet[2];
@@ -235,7 +251,8 @@ void dcd_remote_wakeup(uint8_t rhport)
   USB0.gintmsk |= USB_SOFMSK_M;
 
   // Per specs: remote wakeup signal bit must be clear within 1-15ms
-  vTaskDelay(pdMS_TO_TICKS(1));
+  // replace vTaskDelay with embedder delay
+  tusb_esp32_delay_ms(1);
 
   USB0.dctl &= ~USB_RMTWKUPSIG_M;
 }
@@ -877,13 +894,15 @@ static void _dcd_int_handler(void* arg)
 void dcd_int_enable (uint8_t rhport)
 {
   (void) rhport;
-  esp_intr_alloc(ETS_USB_INTR_SOURCE, ESP_INTR_FLAG_LOWMED, (intr_handler_t) _dcd_int_handler, NULL, &usb_ih);
+  /* delegate to embedder to enable IRQ and attach _dcd_int_handler */
+  tusb_esp32_int_enable(ETS_USB_INTR_SOURCE, _dcd_int_handler, NULL);
 }
 
 void dcd_int_disable (uint8_t rhport)
 {
   (void) rhport;
-  esp_intr_free(usb_ih);
+  /* delegate to embedder to disable IRQ */
+  tusb_esp32_int_disable(ETS_USB_INTR_SOURCE);
 }
 
 #endif // #if OPT_MCU_ESP32S2 || OPT_MCU_ESP32S3

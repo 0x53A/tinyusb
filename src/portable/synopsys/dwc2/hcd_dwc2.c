@@ -166,6 +166,7 @@ TU_ATTR_ALWAYS_INLINE static inline uint8_t channel_alloc(dwc2_regs_t* dwc2) {
     if (!xfer->allocated) {
       tu_memclr(xfer, sizeof(hcd_xfer_t));
       xfer->allocated = true;
+      TU_LOG1("[DWC2] channel_alloc -> ch_id=%u\n", ch_id);
       return ch_id;
     }
   }
@@ -192,6 +193,9 @@ TU_ATTR_ALWAYS_INLINE static inline void channel_dealloc(dwc2_regs_t* dwc2, uint
   hcd_xfer_t* xfer = &_hcd_data.xfer[ch_id];
   xfer->allocated = false;
   dwc2->haintmsk &= ~TU_BIT(ch_id);
+  // Debug: show dealloc and HAINT / HAINTMSK status
+  TU_LOG1("[DWC2] channel_dealloc ch_id=%u haint=0x%08lX haintmsk=0x%08lX\n",
+          ch_id, (unsigned long)dwc2->haint, (unsigned long)dwc2->haintmsk);
 }
 
 TU_ATTR_ALWAYS_INLINE static inline bool channel_disable(const dwc2_regs_t* dwc2, dwc2_channel_t* channel) {
@@ -359,15 +363,22 @@ bool hcd_configure(uint8_t rhport, uint32_t cfg_id, const void* cfg_param) {
 
 // Initialize controller to host mode
 bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
+
+  TU_LOG1("[hcd_init] called\r\n");
+
   (void) rh_init;
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
+  TU_LOG1("[hcd_init] after DWC2_REG\r\n");
 
   tu_memclr(&_hcd_data, sizeof(_hcd_data));
 
   // Core Initialization
   const bool is_highspeed = dwc2_core_is_highspeed(dwc2, TUSB_ROLE_HOST);
+  TU_LOG1("[hcd_init] after dwc2_core_is_highspeed\r\n");
   const bool is_dma = dma_host_enabled(dwc2);
+  TU_LOG1("[hcd_init] after dma_host_enabled\r\n");
   TU_ASSERT(dwc2_core_init(rhport, is_highspeed, is_dma));
+  TU_LOG1("[hcd_init] after dwc2_core_init\r\n");
 
   //------------- 3.1 Host Initialization -------------//
 
@@ -385,10 +396,12 @@ bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   // No hardware detection of Vbus B-session is available on the STM32N6
   dwc2->stm32_gccfg &= ~STM32_GCCFG_VBVALOVAL;
 #endif
+  TU_LOG1("[hcd_init] before 'while ((dwc2->gintsts & GINTSTS_CMOD) != GINTSTS_CMODE_HOST)'\r\n");
   while ((dwc2->gintsts & GINTSTS_CMOD) != GINTSTS_CMODE_HOST) {}
-
+  TU_LOG1("[hcd_init] after 'while ((dwc2->gintsts & GINTSTS_CMOD) != GINTSTS_CMODE_HOST)'\r\n");
   // configure fixed-allocated fifo scheme
   dfifo_host_init(rhport);
+  TU_LOG1("[hcd_init] after dfifo_host_init\r\n");
 
   dwc2->hprt = HPRT_W1_MASK; // clear all write-1-clear bits
   dwc2->hprt = HPRT_POWER; // turn on VBUS
@@ -557,6 +570,9 @@ static bool channel_xfer_start(dwc2_regs_t* dwc2, uint8_t ch_id) {
   dwc2_channel_t* channel = &dwc2->channel[ch_id];
   bool const is_period = channel_is_periodic(edpt->hcchar);
 
+  TU_LOG2("[channel_xfer_start] ch_id=%u, dev=%u ep=%u dir=%u type=%u len=%u\r\n", ch_id, hcchar_bm->dev_addr, hcchar_bm->ep_num,
+          hcchar_bm->ep_dir, hcchar_bm->ep_type, edpt->buflen);
+
   // clear previous state
   xfer->fifo_bytes = 0;
 
@@ -697,6 +713,7 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, const uint8_t setup_packet
   hcd_endpoint_t* edpt = &_hcd_data.edpt[ep_id];
   edpt->next_pid = HCTSIZ_PID_SETUP;
 
+  TU_LOG1("[DWC2] hcd_setup_send rhport=%u dev_addr=%u ep_id=%u setup0=0x%02X\n", rhport, dev_addr, ep_id, setup_packet[0]);
   return hcd_edpt_xfer(rhport, dev_addr, 0, (uint8_t*)(uintptr_t) setup_packet, 8);
 }
 
@@ -783,6 +800,23 @@ TU_ATTR_ALWAYS_INLINE static inline void print_hcint(uint32_t hcint) {
   }
   TU_LOG1("\r\n");
 }
+
+TU_ATTR_ALWAYS_INLINE static inline void print_gintsts(uint32_t gintsts)
+{
+  TU_LOG1("[DWC2] GINTSTS:");
+  if (gintsts & GINTSTS_CMOD)            TU_LOG1(" CMOD");
+  if (gintsts & GINTSTS_MMIS)            TU_LOG1(" MMIS");
+  if (gintsts & GINTSTS_OTGINT)          TU_LOG1(" OTGINT");
+  if (gintsts & GINTSTS_SOF)             TU_LOG1(" SOF");
+  if (gintsts & GINTSTS_RXFLVL)          TU_LOG1(" RXFLVL");
+  if (gintsts & GINTSTS_NPTX_FIFO_EMPTY) TU_LOG1(" NPTXFE");
+  if (gintsts & GINTSTS_PTX_FIFO_EMPTY)  TU_LOG1(" PTXFE");
+  if (gintsts & GINTSTS_HPRTINT)         TU_LOG1(" HPRTINT");
+  if (gintsts & GINTSTS_HCINT)           TU_LOG1(" HCINT");
+  if (gintsts & GINTSTS_DISCINT)         TU_LOG1(" DISCINT");
+  if (gintsts & GINTSTS_CONIDSTSCHNG)    TU_LOG1(" CONIDSTSCHNG");
+  TU_LOG1(" (0x%08lX)\r\n", (unsigned long)gintsts);
+}
 #endif
 
 #if CFG_TUH_DWC2_SLAVE_ENABLE
@@ -832,6 +866,9 @@ static bool handle_txfifo_empty(dwc2_regs_t* dwc2, bool is_periodic) {
   // Use period txsts for both p/np to get request queue space available (1-bit difference, it is small enough)
   const dwc2_hptxsts_t txsts = {.value = (is_periodic ? dwc2->hptxsts : dwc2->hnptxsts)};
 
+  TU_LOG1("[DWC2] handle_txfifo_empty is_periodic=%u fifo_avail_words=%u req_queue=%u\r\n",
+          (unsigned)is_periodic, (unsigned)txsts.fifo_available, (unsigned)txsts.req_queue_available);
+
   const uint8_t max_channel = dwc2_channel_count(dwc2);
   for (uint8_t ch_id = 0; ch_id < max_channel; ch_id++) {
     dwc2_channel_t* channel = &dwc2->channel[ch_id];
@@ -850,15 +887,20 @@ static bool handle_txfifo_empty(dwc2_regs_t* dwc2, bool is_periodic) {
         // skip if there is not enough space in FIFO and RequestQueue.
         // Packet's last word written to FIFO will trigger a request queue
         if ((xact_bytes > (txsts.fifo_available << 2)) || (txsts.req_queue_available == 0)) {
+          TU_LOG1("[DWC2] handle_txfifo_empty ch=%u need_bytes=%u fifo_words=%u reqq=%u -> defer\r\n",
+                  ch_id, (unsigned)xact_bytes, (unsigned)txsts.fifo_available, (unsigned)txsts.req_queue_available);
           return true;
         }
 
+        TU_LOG2("[DWC2] handle_txfifo_empty writing ch=%u bytes=%u buf_offset=%u\r\n",
+                ch_id, (unsigned)xact_bytes, (unsigned)xfer->fifo_bytes);
         dfifo_write_packet(dwc2, ch_id, edpt->buffer + xfer->fifo_bytes, xact_bytes);
         xfer->fifo_bytes += xact_bytes;
       }
     }
   }
 
+  TU_LOG1("[DWC2] handle_txfifo_empty completed: no pending data\r\n");
   return false; // no channel has pending data
 }
 
@@ -1197,15 +1239,38 @@ static void handle_channel_irq(uint8_t rhport, bool in_isr) {
   const bool is_dma = dma_host_enabled(dwc2);
   const uint8_t max_channel = dwc2_channel_count(dwc2);
 
+  // log HAINT before iterating channels
+  TU_LOG1("[DWC2] handle_channel_irq rhport=%u haint=0x%08lX max_ch=%u is_dma=%u\r\n",
+          rhport, (unsigned long)dwc2->haint, max_channel, (unsigned)is_dma);
+
   for (uint8_t ch_id = 0; ch_id < max_channel; ch_id++) {
     if (tu_bit_test(dwc2->haint, ch_id)) {
+      TU_LOG1("[DWC2] servicing channel ch_id=%u hcint=0x%08lX\n", ch_id, (unsigned long)dwc2->channel[ch_id].hcint);
       dwc2_channel_t* channel = &dwc2->channel[ch_id];
+      
+      const uint32_t raw_hcint = channel->hcint;
+      TU_LOG1("[DWC2] servicing channel ch_id=%u raw_hcint=0x%08lX hcchar=0x%08lX hctsiz=0x%08lX hcsplt=0x%08lX\n",
+              ch_id, (unsigned long)raw_hcint, (unsigned long)channel->hcchar, (unsigned long)channel->hctsiz, (unsigned long)channel->hcsplt);
+#if CFG_TUSB_DEBUG
+      print_hcint(raw_hcint);
+#endif
+      
       hcd_xfer_t* xfer = &_hcd_data.xfer[ch_id];
       TU_ASSERT(xfer->ep_id < CFG_TUH_DWC2_ENDPOINT_MAX,);
       dwc2_channel_char_t hcchar = {.value = channel->hcchar};
 
-      const uint32_t hcint = channel->hcint;
+      const uint32_t hcint = raw_hcint;
       channel->hcint = hcint; // clear interrupt
+
+      TU_LOG1("[DWC2] after clear interrupt");
+#if CFG_TUSB_DEBUG
+      print_hcint(channel->hcint);
+#endif
+
+      // immediate readback snapshot
+      TU_LOG1("[DWC2] after clear ch_id=%u channel->hcint=0x%08lX dwc2->haint=0x%08lX haintmsk=0x%08lX\n",
+              ch_id, (unsigned long)channel->hcint, (unsigned long)dwc2->haint, (unsigned long)dwc2->haintmsk);
+
 
       bool is_done = false;
       if (is_dma) {
@@ -1233,6 +1298,7 @@ static void handle_channel_irq(uint8_t rhport, bool in_isr) {
       if (is_done) {
         const uint8_t ep_addr = tu_edpt_addr(hcchar.ep_num, hcchar.ep_dir);
         hcd_event_xfer_complete(hcchar.dev_addr, ep_addr, xfer->xferred_bytes, (xfer_result_t)xfer->result, in_isr);
+        TU_LOG1("[DWC2] channel %u done result=%u xferred=%u ep=0x%02X dev=%u\n", ch_id, xfer->result, xfer->xferred_bytes, ep_addr, hcchar.dev_addr);
         channel_dealloc(dwc2, ch_id);
       }
     }
@@ -1321,6 +1387,10 @@ static void handle_hprt_irq(uint8_t rhport, bool in_isr) {
   const dwc2_hprt_t hprt_bm = {.value = dwc2->hprt};
   uint32_t hprt = hprt_bm.value & ~HPRT_W1_MASK;
 
+  TU_LOG1("[DWC2] handle_hprt_irq rhport=%u hprt_reg=0x%08lX conn_detected=%u conn_status=%u enable_change=%u enable=%u\n",
+          rhport, (unsigned long)hprt_bm.value, (unsigned)hprt_bm.conn_detected, (unsigned)hprt_bm.conn_status,
+          (unsigned)hprt_bm.enable_change, (unsigned)hprt_bm.enable);
+
   if (hprt_bm.conn_detected) {
     // Port Connect Detect
     hprt |= HPRT_CONN_DETECT;
@@ -1344,6 +1414,7 @@ static void handle_hprt_irq(uint8_t rhport, bool in_isr) {
   }
 
   dwc2->hprt = hprt; // clear interrupt
+  TU_LOG1("[DWC2] handle_hprt_irq cleared hprt to 0x%08lX\n", (unsigned long)hprt);
 }
 
 /* Interrupt Hierarchy
@@ -1357,6 +1428,14 @@ void hcd_int_handler(uint8_t rhport, bool in_isr) {
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
   const uint32_t gintmsk = dwc2->gintmsk;
   const uint32_t gintsts = dwc2->gintsts & gintmsk;
+
+  TU_LOG1("[DWC2] hcd_int_handler rhport=%u in_isr=%u gintsts=0x%08lX gintmsk=0x%08lX haint=0x%08lX hprt=0x%08lX\r\n",
+           (unsigned)rhport, (unsigned)in_isr, (unsigned long)gintsts, (unsigned long)gintmsk,
+           (unsigned long)dwc2->haint, (unsigned long)dwc2->hprt);
+
+#if CFG_TUSB_DEBUG
+  print_gintsts(gintsts);
+#endif
 
   // TU_LOG1_HEX(gintsts);
 
@@ -1429,6 +1508,12 @@ void hcd_int_handler(uint8_t rhport, bool in_isr) {
     }
   }
 #endif
-}
 
+  // Snapshot at exit to catch sticky bits causing repeated IRQs
+  TU_LOG1("[DWC2] hcd_int_handler exit: gINTSTS=0x%08lX haint=0x%08lX hprt=0x%08lX gintmsk=0x%08lX\r\n",
+          (unsigned long)dwc2->gintsts, (unsigned long)dwc2->haint, (unsigned long)dwc2->hprt, (unsigned long)dwc2->gintmsk);
+#if CFG_TUSB_DEBUG
+  print_gintsts(dwc2->gintsts & dwc2->gintmsk);
+#endif
+}
 #endif

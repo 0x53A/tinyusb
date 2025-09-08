@@ -356,6 +356,7 @@ bool tuh_hid_receive_ready(uint8_t dev_addr, uint8_t idx) {
 }
 
 bool tuh_hid_receive_report(uint8_t daddr, uint8_t idx) {
+  TU_LOG_DRV("[tuh_hid_receive_report]\r\n");
   hidh_interface_t* p_hid = get_hid_itf(daddr, idx);
   TU_VERIFY(p_hid);
   hidh_epbuf_t* epbuf = get_hid_epbuf(idx);
@@ -619,6 +620,8 @@ static void process_set_config(tuh_xfer_t* xfer) {
 }
 
 static void config_driver_mount_complete(uint8_t daddr, uint8_t idx, uint8_t const* desc_report, uint16_t desc_len) {
+  TU_LOG(3, "[config_driver_mount_complete]");
+
   hidh_interface_t* p_hid = get_hid_itf(daddr, idx);
   TU_VERIFY(p_hid,);
   p_hid->mounted = true;
@@ -636,6 +639,7 @@ static void config_driver_mount_complete(uint8_t daddr, uint8_t idx, uint8_t con
 
 uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, uint8_t arr_count,
                                         uint8_t const* desc_report, uint16_t desc_len) {
+  TU_LOG(3, "[tuh_hid_parse_report_descriptor]");
   // Report Item 6.2.2.2 USB HID 1.11
   union TU_ATTR_PACKED {
     uint8_t byte;

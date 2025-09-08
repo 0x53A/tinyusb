@@ -385,7 +385,7 @@
   #define TUP_USBIP_DWC2
   #define TUP_USBIP_DWC2_ESP32
   #define TUP_DCD_ENDPOINT_MAX    7 // only 5 TX FIFO for endpoint IN
-  #define CFG_TUSB_OS_INC_PATH_DEFAULT   freertos/
+  //#define CFG_TUSB_OS_INC_PATH_DEFAULT   freertos/
 
   #if CFG_TUSB_MCU == OPT_MCU_ESP32S3
     #define TUP_MCU_MULTIPLE_CORE 1

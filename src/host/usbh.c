@@ -506,10 +506,14 @@ bool tuh_rhport_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
     }
   }
 
+  TU_LOG_USBH("All drivers initialized\r\n");
+
   // Init host controller
   _usbh_data.controller_id = rhport;
   TU_ASSERT(hcd_init(rhport, rh_init));
+  TU_LOG_USBH("hcd_init returned\r\n");
   hcd_int_enable(rhport);
+  TU_LOG_USBH("hcd_int_enable returned\r\n");
 
   return true;
 }
@@ -766,7 +770,8 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
 }
 
 static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
-  TU_LOG_USBH("\r\n");
+  TU_LOG_USBH("_control_xfer_complete: daddr=%u result=%d stage=%u\r\n",
+              daddr, result, (unsigned)_usbh_data.ctrl_xfer_info.stage);
   usbh_ctrl_xfer_info_t* ctrl_info = &_usbh_data.ctrl_xfer_info;
 
   // duplicate xfer since user can execute control transfer within callback
@@ -792,9 +797,15 @@ static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
 static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
   (void) ep_addr;
 
+  TU_LOG_USBH("[usbh_control_xfer_cb]\r\n");
+
   const uint8_t rhport = usbh_get_rhport(daddr);
   tusb_control_request_t const * request = &_usbh_epbuf.request;
   usbh_ctrl_xfer_info_t* ctrl_info = &_usbh_data.ctrl_xfer_info;
+
+  TU_LOG_USBH("usbh_control_xfer_cb: daddr=%u ep=0x%02X result=%d xferred=%u stage=%u\r\n",
+              daddr, ep_addr, result, xferred_bytes, (uint32_t)ctrl_info->stage);
+
 
   switch (result) {
     case XFER_RESULT_STALLED:
@@ -1405,6 +1416,8 @@ static void process_enumeration(tuh_xfer_t* xfer);
 
 // start a new enumeration process
 static bool enum_new_device(hcd_event_t* event) {
+  TU_LOG_USBH("[enum_new_device]");
+
   tuh_bus_info_t* dev0_bus = &_usbh_data.dev0_bus;
   dev0_bus->rhport = event->rhport;
   dev0_bus->hub_addr = event->connection.hub_addr;
@@ -1464,6 +1477,9 @@ static bool enum_new_device(hcd_event_t* event) {
 
 // process device enumeration
 static void process_enumeration(tuh_xfer_t* xfer) {
+
+  TU_LOG_USBH("[process_enumeration]\r\n");
+
   // Retry a few times while enumerating since device can be unstable when starting up
   static uint8_t failed_count = 0;
   if (XFER_RESULT_FAILED == xfer->result) {
@@ -1496,6 +1512,8 @@ static void process_enumeration(tuh_xfer_t* xfer) {
     TU_ASSERT(dev,);
   }
   uint16_t langid = 0x0409; // default is English
+
+  TU_LOG_USBH("process_enumeration: daddr=%u state=%u result=%u\r\n", daddr, (unsigned)state, (unsigned)xfer->result);
 
   switch (state) {
     #if CFG_TUH_HUB
@@ -1586,6 +1604,8 @@ static void process_enumeration(tuh_xfer_t* xfer) {
     }
 
     case ENUM_GET_DEVICE_DESC: {
+      TU_LOG_USBH("ENUM_GET_DEVICE_DESC: daddr=%u requesting full device descriptor (wLength=%u)\r\n",
+                  daddr, (unsigned)tu_le16toh(xfer->setup->wLength));
       tusb_time_delay_ms_api(ENUM_SET_ADDRESS_RECOVERY_DELAY_MS); // set address recovery
 
       const uint8_t new_addr = (uint8_t) tu_le16toh(xfer->setup->wValue);
@@ -1886,6 +1906,8 @@ static bool enum_parse_configuration_desc(uint8_t dev_addr, tusb_desc_configurat
 }
 
 void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
+  TU_LOG_USBH("[set_config_complete] dev_addr = %u, itf_num = %u\r\n", dev_addr, itf_num);
+
   usbh_device_t* dev = get_device(dev_addr);
 
   for(itf_num++; itf_num < CFG_TUH_INTERFACE_MAX; itf_num++) {

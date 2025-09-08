@@ -209,19 +209,25 @@ bool dwc2_core_is_highspeed(dwc2_regs_t* dwc2, tusb_role_t role) {
  *
 */
 bool dwc2_core_init(uint8_t rhport, bool is_highspeed, bool is_dma) {
+  TU_LOG1("[dwc2_core_init] called\r\n");
   dwc2_regs_t* dwc2 = DWC2_REG(rhport);
+  TU_LOG1("[dwc2_core_init] after DWC2_REG\r\n");
 
   // Check Synopsys ID register, failed if controller clock/power is not enabled
   TU_ASSERT(check_dwc2(dwc2));
+  TU_LOG1("[dwc2_core_init] after check_dwc2\r\n");
 
   // disable global interrupt
   dwc2->gahbcfg &= ~GAHBCFG_GINT;
 
   if (is_highspeed) {
+  TU_LOG1("[dwc2_core_init] before phy_hs_init\r\n");
     phy_hs_init(dwc2);
   } else {
+  TU_LOG1("[dwc2_core_init] before phy_fs_init\r\n");
     phy_fs_init(dwc2);
   }
+  TU_LOG1("[dwc2_core_init] after phy_init\r\n");
 
   /* Set HS/FS Timeout Calibration to 7 (max available value).
    * The number of PHY clocks that the application programs in
@@ -235,8 +241,11 @@ bool dwc2_core_init(uint8_t rhport, bool is_highspeed, bool is_dma) {
   // Enable PHY clock TODO stop/gate clock when suspended mode
   dwc2->pcgcctl &= ~(PCGCCTL_STOPPCLK | PCGCCTL_GATEHCLK | PCGCCTL_PWRCLMP | PCGCCTL_RSTPDWNMODULE);
 
+  TU_LOG1("[dwc2_core_init] before dfifo_flush_tx\r\n");
   dfifo_flush_tx(dwc2, 0x10); // all tx fifo
+  TU_LOG1("[dwc2_core_init] after dfifo_flush_tx\r\n");
   dfifo_flush_rx(dwc2);
+  TU_LOG1("[dwc2_core_init] after dfifo_flush_rx\r\n");
 
   // Clear pending and disable all interrupts
   dwc2->gintsts = 0xFFFFFFFFU;
